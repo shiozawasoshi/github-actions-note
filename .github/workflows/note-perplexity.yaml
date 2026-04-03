@@ -48,11 +48,10 @@ env:
   TZ: Asia/Tokyo
 
 jobs:
-  research:
-    name: Research (Perplexity Search API)
+    research:
+    name: Research (Agent SDK WebSearch/WebFetch)
     runs-on: ubuntu-latest
     env:
-      PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       THEME: ${{ github.event.inputs.theme }}
       TARGET: ${{ github.event.inputs.target }}
@@ -67,150 +66,81 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies
+      - name: Install Claude Agent SDK
         run: |
           npm init -y
-          npm i @perplexity-ai/perplexity_ai ai @ai-sdk/anthropic
+          npm i @anthropic-ai/claude-agent-sdk
 
-      - name: Research with Perplexity API
+      - name: Research with Claude Agent SDK
         run: |
           cat > research.mjs <<'EOF'
-          import Perplexity from '@perplexity-ai/perplexity_ai';
-          import { generateText } from 'ai';
-          import { anthropic } from '@ai-sdk/anthropic';
+          import { query } from '@anthropic-ai/claude-agent-sdk';
           import fs from 'fs';
 
           const theme = process.env.THEME || '';
           const target = process.env.TARGET || '';
-          const today = new Date().toISOString().slice(0,10);
+          const today = new Date().toISOString().slice(0, 10);
           const artifactsDir = '.note-artifacts';
+
           fs.mkdirSync(artifactsDir, { recursive: true });
 
-          // Perplexity APIクライアント初期化
-          const perplexity = new Perplexity({
-            apiKey: process.env.PERPLEXITY_API_KEY
-          });
+          const sys = [
+            'あなたは最新情報の収集と要約に特化した超一流のリサーチャーです。',
+            '事実ベース・一次情報優先・本文内にMarkdownリンクで出典を埋め込むこと。',
+            '十分な分量（目安: 2,000語以上）。各節で出典を本文に埋め込む。',
+            'WebSearch と WebFetch を必ず使用し、一次情報（公的機関・規格・論文・公式）を優先する。'
+          ].join('\n');
 
-          async function main() {
-            try {
-              // 複数の検索クエリを実行
-              const queries = [
-                `${theme} 最新情報 ${today}`,
-                `${theme} トレンド 動向`,
-                `${theme} 事例 実践`,
-                `${theme} 課題 解決策`,
-                `${theme} 将来 展望`
-              ];
+          const userPrompt = `以下のテーマとターゲットに対する最終版のリサーチレポートを作成してください。
+          【重要】途中経過や確認質問は一切せず、最終レポートのみを返してください。不明点がある場合は「前提と仮定」セクションで簡潔に仮定を明記してから続行してください。事実ベースで一次情報を最優先し、本文にMarkdownリンクで出典を埋め込んでください。
+          ---
+          テーマ: ${theme}
+          ターゲット: ${target}
+          現在日付: ${today}`;
 
-              console.log('Perplexity検索を開始...');
-              const searchResults = [];
+          const messages = [];
 
-              for (const query of queries) {
-                console.log(`検索中: ${query}`);
-                const search = await perplexity.search.create({
-                  query: query,
-                  maxResults: 5,
-                  maxTokensPerPage: 2048,
-                  country: 'JP'
-                });
-                searchResults.push({ query, results: search.results });
-              }
-
-              // 検索結果をMarkdown形式でフォーマット
-              let researchMd = `# リサーチレポート: ${theme}\n\n`;
-              researchMd += `**作成日**: ${today}\n`;
-              researchMd += `**対象読者**: ${target}\n\n`;
-              researchMd += `---\n\n`;
-
-              for (const { query, results } of searchResults) {
-                researchMd += `## ${query}\n\n`;
-                
-                if (Array.isArray(results) && results.length > 0) {
-                  for (const result of results) {
-                    researchMd += `### ${result.title}\n\n`;
-                    researchMd += `**URL**: [${result.url}](${result.url})\n\n`;
-                    if (result.date) {
-                      researchMd += `**日付**: ${result.date}\n\n`;
-                    }
-                    if (result.snippet) {
-                      researchMd += `${result.snippet}\n\n`;
-                    }
-                    researchMd += `---\n\n`;
-                  }
-                } else {
-                  researchMd += `検索結果なし\n\n`;
-                }
-              }
-
-              // Claudeで検索結果を要約・構造化
-              console.log('Claudeで検索結果を分析・構造化中...');
-              const modelName = 'claude-sonnet-4-20250514';
-              const systemPrompt = [
-                'あなたは最新情報の分析と構造化に特化した超一流のリサーチャーです。',
-                '提供された検索結果を基に、事実ベースで信頼性の高いリサーチレポートを作成してください。',
-                '出典は本文内にMarkdownリンクで必ず埋め込むこと。',
-                '十分な分量（目安: 2,000語以上）で、各節に適切な見出しと構造を持たせてください。',
-                '一次情報（公的機関・規格・論文・公式発表）を優先し、情報源を明記してください。'
-              ].join('\n');
-
-              const userPrompt = [
-                `以下の検索結果を基に、テーマ「${theme}」に関する包括的なリサーチレポートを作成してください。`,
-                ``,
-                `**対象読者**: ${target}`,
-                `**現在日付**: ${today}`,
-                ``,
-                `## 検索結果`,
-                ``,
-                researchMd,
-                ``,
-                `## 要件`,
-                ``,
-                `1. 検索結果から重要な情報を抽出し、論理的に構造化する`,
-                `2. 各主張には必ず出典のMarkdownリンクを埋め込む`,
-                `3. 最新のトレンド、具体的な事例、課題と解決策、将来展望を含める`,
-                `4. 対象読者(${target})に分かりやすく説明する`,
-                `5. 情報の信頼性を評価し、一次情報を優先する`,
-                ``,
-                `**重要**: 途中経過や確認質問は一切せず、最終レポートのみを返してください。`
-              ].join('\n');
-
-              const { text } = await generateText({
-                model: anthropic(modelName),
-                system: systemPrompt,
-                prompt: userPrompt,
-                temperature: 0.3,
-                maxTokens: 30000
-              });
-
-              const finalReport = text || researchMd;
-
-              // 保存
-              fs.writeFileSync(`${artifactsDir}/research.md`, finalReport);
-              
-              // トレース用に生データも保存
-              const traceData = {
-                theme,
-                target,
-                date: today,
-                queries,
-                searchResults,
-                finalReport: finalReport.substring(0, 500) + '...'
-              };
-              fs.writeFileSync(`${artifactsDir}/research_trace.json`, JSON.stringify(traceData, null, 2));
-
-              console.log('リサーチ完了！');
-
-            } catch (error) {
-              console.error('エラー:', error);
-              // エラー時は検索結果のみを保存
-              const fallbackReport = `# リサーチレポート: ${theme}\n\n**エラーが発生しました**: ${error.message}\n\n検索は部分的に完了している可能性があります。`;
-              fs.writeFileSync(`${artifactsDir}/research.md`, fallbackReport);
-              throw error;
+          for await (const msg of query({
+            prompt: userPrompt,
+            options: {
+              systemPrompt: sys,
+              allowedTools: ['WebSearch', 'WebFetch']
             }
+          })) {
+            messages.push(msg);
           }
 
-          await main();
+          const assistantTexts = messages
+            .map((m) => {
+              if (typeof m?.result === 'string' && m.result.trim()) {
+                return m.result;
+              }
+
+              const c = m?.message?.content;
+              if (Array.isArray(c)) {
+                return c
+                  .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+                  .map((b) => b.text)
+                  .join('\n');
+              }
+
+              return '';
+            })
+            .filter(Boolean)
+            .join('\n\n');
+
+          fs.writeFileSync(`${artifactsDir}/research.md`, assistantTexts || '');
+
+          try {
+            fs.writeFileSync(
+              `${artifactsDir}/research_trace.json`,
+              JSON.stringify(messages, null, 2)
+            );
+          } catch (e) {
+            console.error('failed to write research_trace.json:', e);
+          }
           EOF
+
           node research.mjs
 
       - name: Collect research
